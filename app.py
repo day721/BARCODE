@@ -5,97 +5,118 @@ from barcode.writer import ImageWriter
 import io
 import base64
 
-# Set up the page
-st.set_page_config(page_title="PDT Visual Barcode Scanner", layout="wide")
+# Set up the page for a wider view
+st.set_page_config(page_title="Large Barcode Scanner", layout="wide")
 
-st.title("📟 PDT Barcode Collector with Visuals")
-st.write("Ensure your cursor is in the box below before scanning.")
+st.title("📟 High-Visibility PDT Collector")
 
 # Initialize session state
 if 'barcode_list' not in st.session_state:
     st.session_state.barcode_list = []
+if 'last_scanned' not in st.session_state:
+    st.session_state.last_scanned = None
 
-# Function to generate barcode image as a Base64 string
-def generate_barcode_image(code_text):
+def generate_barcode_image(code_text, is_preview=False):
     try:
-        # Using Code128 which is standard for most PDT scans
+        # Code128 is versatile. 
+        # For UPC-A (like your photo), you can use barcode.get('upca', ...)
         code_class = barcode.get_barcode_class('code128')
-        # Create barcode object
+        
+        # Adjusting the thickness for scannability
+        # module_width: width of the thinnest bar
+        # module_height: height of the bars
+        writer_options = {
+            'module_width': 0.4, 
+            'module_height': 20.0, 
+            'font_size': 10,
+            'text_distance': 5
+        } if not is_preview else {
+            'module_width': 0.8, # Double thickness for preview
+            'module_height': 30.0, 
+            'font_size': 15,
+            'text_distance': 8
+        }
+
         barcode_obj = code_class(code_text, writer=ImageWriter())
-        
-        # Save to a byte buffer
         buffer = io.BytesIO()
-        barcode_obj.write(buffer)
+        barcode_obj.write(buffer, options=writer_options)
         
-        # Encode to Base64 to display in the dataframe
-        b64 = base64.b64encode(buffer.getvalue()).decode()
-        return f"data:image/png;base64,{b64}"
+        return buffer.getvalue()
     except Exception:
         return None
 
-# Function to handle the scan input
 def add_barcode():
     new_code = st.session_state.barcode_input.strip()
     if new_code:
-        # Add the code to the list
         st.session_state.barcode_list.append(new_code)
-        # Reset input box
+        st.session_state.last_scanned = new_code
         st.session_state.barcode_input = ""
 
-# --- Input Section ---
-st.text_input(
-    "Scan Barcode Here:", 
-    key="barcode_input", 
-    on_change=add_barcode,
-    placeholder="Waiting for PDT scan..."
-)
+# --- Layout: Input and Preview ---
+col_in, col_pre = st.columns([1, 1])
+
+with col_in:
+    st.subheader("1. Scan Input")
+    st.text_input(
+        "Click here & Scan:", 
+        key="barcode_input", 
+        on_change=add_barcode,
+        placeholder="Waiting for scan..."
+    )
+
+with col_pre:
+    st.subheader("2. Last Scanned (Big View)")
+    if st.session_state.last_scanned:
+        img_bytes = generate_barcode_image(st.session_state.last_scanned, is_preview=True)
+        if img_bytes:
+            st.image(img_bytes, caption=f"Current: {st.session_state.last_scanned}", use_container_width=True)
+    else:
+        st.info("Scan something to see the preview.")
 
 st.divider()
 
 # --- List Section ---
 if st.session_state.barcode_list:
-    st.subheader("Inventory List")
+    st.subheader("3. Scanned History")
     
-    # Create the data for the table
+    # Prepare data for the table
     table_data = []
     for idx, code in enumerate(st.session_state.barcode_list):
+        img_bytes = generate_barcode_image(code)
+        # Convert to Base64 for the dataframe column
+        b64 = base64.b64encode(img_bytes).decode()
         table_data.append({
             "No.": idx + 1,
-            "Barcode Number": code,
-            "Visual Barcode": generate_barcode_image(code)
+            "Number": code,
+            "Barcode View": f"data:image/png;base64,{b64}"
         })
     
     df = pd.DataFrame(table_data)
 
-    # Display using st.dataframe with Image Column configuration
+    # Displaying the list with a "Large" image configuration
     st.dataframe(
         df,
         column_config={
-            "Visual Barcode": st.column_config.ImageColumn("Visual Barcode", width="medium"),
-            "Barcode Number": st.column_config.TextColumn("Barcode Number")
+            "Barcode View": st.column_config.ImageColumn("Barcode View", width="large"),
+            "Number": st.column_config.TextColumn("Number", width="medium")
         },
         hide_index=True,
         use_container_width=True
     )
 
-    # --- Deletion Section ---
-    st.write("### Manage Items")
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
+    # --- Deletion ---
+    with st.expander("Manage/Delete Barcodes"):
         to_delete = st.selectbox(
-            "Select item to remove:", 
+            "Select to remove:", 
             options=range(len(st.session_state.barcode_list)),
             format_func=lambda x: f"Item {x+1}: {st.session_state.barcode_list[x]}"
         )
-    
-    with col2:
-        if st.button("🗑️ Delete Selected", use_container_width=True):
+        if st.button("🗑️ Delete Selected"):
             st.session_state.barcode_list.pop(to_delete)
             st.rerun()
-
-    if st.button("Clear Full List"):
-        st.session_state.barcode_list = []
-        st.rerun()
+        
+        if st.button("🚨 Clear All"):
+            st.session_state.barcode_list = []
+            st.rerun()
 else:
-    st.info("The list is currently empty. Start scanning!")
+    st.write("Scan a barcode to populate the list.")
