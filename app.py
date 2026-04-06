@@ -5,7 +5,7 @@ import barcode
 from barcode.writer import ImageWriter
 import io
 import time
-from fpdf import FPDF # New Import
+from fpdf import FPDF
 
 # --- CONFIG ---
 st.set_page_config(page_title="Global Sync Barcode Scanner", layout="wide")
@@ -15,8 +15,11 @@ FILE_NAME = "barcodes.csv"
 @st.cache_resource
 def get_global_data():
     if os.path.exists(FILE_NAME):
-        df = pd.read_csv(FILE_NAME, dtype={"Barcode": str})
-        return {"list": df["Barcode"].tolist(), "last_update": time.time()}
+        try:
+            df = pd.read_csv(FILE_NAME, dtype={"Barcode": str})
+            return {"list": df["Barcode"].tolist(), "last_update": time.time()}
+        except:
+            return {"list": [], "last_update": time.time()}
     return {"list": [], "last_update": time.time()}
 
 shared_state = get_global_data()
@@ -28,64 +31,76 @@ def sync_to_disk():
 
 # --- BARCODE GENERATOR ---
 @st.cache_data
-def generate_barcode(code_text):
+def generate_barcode_image(code_text):
+    """Returns the barcode as raw bytes (PNG)."""
     try:
         code_class = barcode.get_barcode_class('code128')
         writer_options = {'module_width': 0.3, 'module_height': 12.0, 'font_size': 10}
         barcode_obj = code_class(code_text, writer=ImageWriter())
         buffer = io.BytesIO()
         barcode_obj.write(buffer, options=writer_options)
-        return buffer
+        return buffer.getvalue()
     except:
         return None
 
 # --- PDF EXPORT LOGIC ---
 def create_pdf(barcode_list):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="Scanned Barcode Report", ln=True, align='C')
-    pdf.ln(10)
-    
-    pdf.set_font("Arial", size=12)
-    
-    for i, code in enumerate(barcode_list):
-        # Text Label
-        pdf.cell(200, 10, txt=f"Item {len(barcode_list)-i}: {code}", ln=True)
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
         
-        # Generate image for PDF
-        img_buffer = generate_barcode(code)
-        if img_buffer:
-            # We use a temporary named location for FPDF to grab the buffer
-            pdf.image(img_buffer, x=10, y=None, w=100)
-            pdf.ln(5) # Space after image
+        # Title
+        pdf.set_font("Helvetica", 'B', 16)
+        pdf.cell(0, 10, txt="Scanned Barcode Report", ln=True, align='C')
+        pdf.ln(10)
+        
+        pdf.set_font("Helvetica", size=12)
+        
+        for i, code in enumerate(barcode_list):
+            # Text Label
+            pdf.cell(0, 10, txt=f"Item {len(barcode_list)-i}: {code}", ln=True)
             
-    return pdf.output()
+            # Generate image bytes
+            img_bytes = generate_barcode_image(code)
+            if img_bytes:
+                # FPDF2 can accept io.BytesIO for images
+                img_io = io.BytesIO(img_bytes)
+                pdf.image(img_io, x=10, w=100)
+                pdf.ln(5)
+        
+        # CRITICAL FIX: Explicitly cast output to bytes
+        return bytes(pdf.output())
+    except Exception as e:
+        st.error(f"Error creating PDF: {e}")
+        return None
 
 # --- UI LOGIC ---
 st.title("📟 Real-Time Shared Barcode Scanner")
 
-# --- SIDEBAR FOR ACTIONS ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Actions")
     if shared_state["list"]:
-        # PDF Generation
-        pdf_bytes = create_pdf(shared_state["list"])
-        st.download_button(
-            label="📥 Download PDF Report",
-            data=pdf_bytes,
-            file_name="barcodes_report.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        # 1. Generate PDF Bytes
+        pdf_data = create_pdf(shared_state["list"])
         
-        # CSV Generation
+        # 2. Only show button if data exists and is not None
+        if pdf_data:
+            st.download_button(
+                label="📥 Download PDF Report",
+                data=pdf_data,
+                file_name="barcodes_report.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        
+        # CSV Download
         df_download = pd.DataFrame({"Barcode": shared_state["list"]})
-        csv = df_download.to_csv(index=False).encode('utf-8')
+        csv_data = df_download.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📄 Download CSV",
-            data=csv,
+            data=csv_data,
             file_name="barcodes.csv",
             mime="text/csv",
             use_container_width=True
@@ -130,9 +145,9 @@ def display_list_realtime():
         with c2:
             st.code(code, language=None)
         with c3:
-            img_buffer = generate_barcode(code)
-            if img_buffer:
-                st.image(img_buffer, width=250)
+            img_bytes = generate_barcode_image(code)
+            if img_bytes:
+                st.image(img_bytes, width=250)
         with c4:
             if st.button("🗑️", key=f"del_{i}_{shared_state['last_update']}"):
                 shared_state["list"].pop(i)
