@@ -1,37 +1,38 @@
 import streamlit as st
+import pandas as pd
+import os
 import barcode
 from barcode.writer import ImageWriter
 import io
-import json
-import base64
-from github import Github  # You'll need to add PyGithub to requirements.txt
 
 # --- CONFIG ---
-st.set_page_config(page_title="GitHub Synced Scanner", layout="wide")
+st.set_page_config(page_title="CSV Barcode Scanner", layout="wide")
+FILE_NAME = "barcodes.csv"
 
-# --- GITHUB SYNC LOGIC ---
-# Securely get your GitHub Token from Streamlit Secrets
-GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-REPO_NAME = "your-username/your-repo-name" # Change this to your repo
-FILE_PATH = "data.json"
+# --- INITIALIZE CSV ---
+# If the file doesn't exist yet, create an empty one
+if not os.path.exists(FILE_NAME):
+    pd.DataFrame(columns=["Barcode"]).to_csv(FILE_NAME, index=False)
 
-g = Github(GITHUB_TOKEN)
-repo = g.get_repo(REPO_NAME)
+# Load existing data into session state
+if 'barcode_list' not in st.session_state:
+    # Read CSV and ensure barcodes are treated as strings, not math numbers
+    df = pd.read_csv(FILE_NAME, dtype={"Barcode": str})
+    st.session_state.barcode_list = df["Barcode"].tolist()
 
-def load_data():
-    try:
-        contents = repo.get_contents(FILE_PATH)
-        return json.loads(contents.decoded_content.decode()), contents.sha
-    except:
-        return [], None
+# --- FILE SAVING LOGIC ---
+def save_to_csv():
+    # Save the current session state list back to the CSV file
+    df_new = pd.DataFrame({"Barcode": st.session_state.barcode_list})
+    df_new.to_csv(FILE_NAME, index=False)
 
-def save_data(new_list):
-    data_str = json.dumps(new_list, indent=4)
-    _, sha = load_data()
-    if sha:
-        repo.update_file(FILE_PATH, "Update barcode list", data_str, sha)
-    else:
-        repo.create_file(FILE_PATH, "Create barcode list", data_str)
+def handle_scan():
+    new_code = st.session_state.barcode_input.strip()
+    if new_code:
+        # Add to top of the list so newest is first
+        st.session_state.barcode_list.insert(0, new_code)
+        save_to_csv()
+        st.session_state.barcode_input = ""
 
 # --- BARCODE GENERATOR ---
 def generate_barcode(code_text):
@@ -42,46 +43,59 @@ def generate_barcode(code_text):
         buffer = io.BytesIO()
         barcode_obj.write(buffer, options=writer_options)
         return buffer.getvalue()
-    except: return None
+    except Exception:
+        return None
 
-# --- APP UI ---
-st.title("📟 GitHub Synced Barcodes")
-st.info("Scanning here updates the JSON file in your GitHub repo for all devices to see.")
+# --- UI ---
+st.title("📟 CSV File Barcode Scanner")
+st.write(f"Saving data automatically to: **{FILE_NAME}**")
 
-# Load current data from GitHub
-current_list, file_sha = load_data()
-
-def handle_scan():
-    code = st.session_state.barcode_input.strip()
-    if code:
-        current_list.append(code)
-        save_data(current_list)
-        st.session_state.barcode_input = ""
-
-st.text_input("👉 Scan Barcode:", key="barcode_input", on_change=handle_scan)
+# Input field
+st.text_input(
+    "👉 Scan Barcode Here:", 
+    key="barcode_input", 
+    on_change=handle_scan,
+    placeholder="Waiting for scanner..."
+)
 
 st.divider()
 
-if current_list:
-    # Header
-    col_no, col_txt, col_img, col_btn = st.columns([0.5, 2, 3, 1])
-    col_no.write("**No.**")
-    col_txt.write("**Code**")
-    col_img.write("**Barcode View**")
-    
-    # Show items (Newest first)
-    for i in range(len(current_list) - 1, -1, -1):
+# Display List
+if st.session_state.barcode_list:
+    # Headers
+    h1, h2, h3, h4 = st.columns([0.5, 2, 3, 1])
+    h1.write("**No.**")
+    h2.write("**Code**")
+    h3.write("**Barcode View**")
+    h4.write("**Action**")
+    st.divider()
+
+    # Loop through list
+    for i, code in enumerate(st.session_state.barcode_list):
         c1, c2, c3, c4 = st.columns([0.5, 2, 3, 1])
-        with c1: st.write(i + 1)
-        with c2: st.info(current_list[i])
+        
+        with c1:
+            st.write(str(len(st.session_state.barcode_list) - i)) # Reverse numbering
+            
+        with c2:
+            st.info(code)
+            
         with c3:
-            img = generate_barcode(current_list[i])
-            if img: st.image(img, width=300)
+            img = generate_barcode(code)
+            if img:
+                st.image(img, width=300)
+                
         with c4:
             if st.button("Delete", key=f"del_{i}"):
-                current_list.pop(i)
-                save_data(current_list)
+                st.session_state.barcode_list.pop(i)
+                save_to_csv()
                 st.rerun()
         st.write("---")
+        
+    # Clear All Button
+    if st.button("🚨 Clear Entire File", type="primary"):
+        st.session_state.barcode_list = []
+        save_to_csv()
+        st.rerun()
 else:
-    st.write("No data found in GitHub JSON.")
+    st.info("The CSV file is currently empty.")
